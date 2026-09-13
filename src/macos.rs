@@ -1,14 +1,20 @@
-use crate::{Autoproxy, Error, Result, Sysproxy};
-use log::debug;
+use std::io::Write;
 use std::net::{SocketAddr, UdpSocket};
-use std::{process::Command, str::from_utf8};
+use std::process::{Command, Stdio};
+use std::str::from_utf8;
+
+use log::debug;
+
+use crate::{Autoproxy, Error, Result, Sysproxy};
 
 impl Sysproxy {
+    /// The primary network service, independent of VPN capture routes.
+    pub fn network_service() -> Result<String> {
+        default_network_service()
+    }
+
     pub fn get_system_proxy() -> Result<Sysproxy> {
-        let service = default_network_service().or_else(|e| {
-            debug!("Failed to get network service: {:?}", e);
-            default_network_service_by_ns()
-        });
+        let service = default_network_service();
         if let Err(e) = service {
             debug!("Failed to get network service by networksetup: {:?}", e);
             return Err(e);
@@ -47,10 +53,7 @@ impl Sysproxy {
     }
 
     pub fn set_system_proxy(&self) -> Result<()> {
-        let service = default_network_service().or_else(|e| {
-            debug!("Failed to get network service: {:?}", e);
-            default_network_service_by_ns()
-        });
+        let service = default_network_service();
         if let Err(e) = service {
             debug!("Failed to get network service by networksetup: {:?}", e);
             return Err(e);
@@ -91,6 +94,7 @@ impl Sysproxy {
             .args(["-getproxybypassdomains", service])
             .output()?;
 
+        check_output(&bypass_output)?;
         let bypass = from_utf8(&bypass_output.stdout)
             .or(Err(Error::ParseStr("bypass".into())))?
             .split('\n')
@@ -98,7 +102,13 @@ impl Sysproxy {
             .collect::<Vec<&str>>()
             .join(",");
 
-        Ok(bypass)
+        Ok(
+            if bypass.starts_with("There aren't any bypass domains set") {
+                String::new()
+            } else {
+                bypass
+            },
+        )
     }
 
     pub fn set_http(&self, service: &str) -> Result<()> {
@@ -114,20 +124,21 @@ impl Sysproxy {
     }
 
     pub fn set_bypass(&self, service: &str) -> Result<()> {
-        let domains = self.bypass.split(",").collect::<Vec<_>>();
-        networksetup()
+        let domains = if self.bypass.is_empty() {
+            vec!["Empty"]
+        } else {
+            self.bypass.split(',').collect::<Vec<_>>()
+        };
+        let output = networksetup()
             .args([["-setproxybypassdomains", service].to_vec(), domains].concat())
-            .status()?;
-        Ok(())
+            .output()?;
+        check_output(&output)
     }
 }
 
 impl Autoproxy {
     pub fn get_auto_proxy() -> Result<Autoproxy> {
-        let service = default_network_service().or_else(|e| {
-            debug!("Failed to get network service: {:?}", e);
-            default_network_service_by_ns()
-        });
+        let service = default_network_service();
         if let Err(e) = service {
             debug!("Failed to get network service by networksetup: {:?}", e);
             return Err(e);
@@ -153,10 +164,7 @@ impl Autoproxy {
     }
 
     pub fn set_auto_proxy(&self) -> Result<()> {
-        let service = default_network_service().or_else(|e| {
-            debug!("Failed to get network service: {:?}", e);
-            default_network_service_by_ns()
-        });
+        let service = default_network_service();
         if let Err(e) = service {
             debug!("Failed to get network service by networksetup: {:?}", e);
             return Err(e);
@@ -199,7 +207,15 @@ impl ProxyType {
 }
 
 fn networksetup() -> Command {
-    Command::new("networksetup")
+    Command::new("/usr/sbin/networksetup")
+}
+
+fn check_output(output: &std::process::Output) -> Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+    // Do not include arguments or command output: proxy URLs can contain credentials.
+    Err(std::io::Error::other(format!("networksetup failed with {}", output.status)).into())
 }
 
 fn set_proxy(proxy: &Sysproxy, proxy_type: ProxyType, service: &str) -> Result<()> {
@@ -210,18 +226,22 @@ fn set_proxy(proxy: &Sysproxy, proxy_type: ProxyType, service: &str) -> Result<(
     let port = format!("{}", proxy.port);
     let port = port.as_str();
 
-    networksetup()
-        .args([target, service, host, port])
-        .status()?;
+    // An unset, disabled proxy has no valid endpoint to pass to networksetup.
+    // Turning it off must still succeed; retain valid saved endpoints when present.
+    if proxy.enable || (!proxy.host.is_empty() && proxy.port != 0) {
+        let output = networksetup()
+            .args([target, service, host, port])
+            .output()?;
+        check_output(&output)?;
+    }
 
     let target_state = format!("-set{}state", proxy_type.to_target());
     let enable = if proxy.enable { "on" } else { "off" };
 
-    networksetup()
+    let output = networksetup()
         .args([target_state.as_str(), service, enable])
-        .status()?;
-
-    Ok(())
+        .output()?;
+    check_output(&output)
 }
 
 fn get_proxy(proxy_type: ProxyType, service: &str) -> Result<Sysproxy> {
@@ -229,6 +249,7 @@ fn get_proxy(proxy_type: ProxyType, service: &str) -> Result<Sysproxy> {
     let target = target.as_str();
 
     let output = networksetup().args([target, service]).output()?;
+    check_output(&output)?;
 
     let stdout = from_utf8(&output.stdout).or(Err(Error::ParseStr("output".into())))?;
     let enable = parse(stdout, "Enabled:");
@@ -271,6 +292,11 @@ fn strip_str<'a>(text: &'a str) -> &'a str {
 }
 
 fn default_network_service() -> Result<String> {
+    if let Ok(interface) = primary_interface() {
+        return get_server_by_order(interface);
+    }
+    // Only use the route probe when SystemConfiguration is unavailable. Never
+    // guess the first listed service: it may be an unplugged Thunderbolt bridge.
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.connect("1.1.1.1:80")?;
     let ip = socket.local_addr()?.ip();
@@ -291,17 +317,31 @@ fn default_network_service() -> Result<String> {
     }
 }
 
-fn default_network_service_by_ns() -> Result<String> {
-    let output = networksetup().arg("-listallnetworkservices").output()?;
-    let stdout = from_utf8(&output.stdout).or(Err(Error::ParseStr("output".into())))?;
-    let mut lines = stdout.split('\n');
-    lines.next(); // ignore the tips
-
-    // get the first service
-    match lines.next() {
-        Some(line) => Ok(line.into()),
-        None => Err(Error::NetworkInterface),
+fn primary_interface() -> Result<String> {
+    let mut child = Command::new("/usr/sbin/scutil")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or(Error::NetworkInterface)?
+        .write_all(b"show State:/Network/Global/IPv4\nquit\n")?;
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err(Error::NetworkInterface);
     }
+    primary_interface_from_output(from_utf8(&output.stdout).map_err(|_| Error::NetworkInterface)?)
+        .ok_or(Error::NetworkInterface)
+}
+
+fn primary_interface_from_output(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let (key, value) = line.trim().split_once(':')?;
+        let value = value.trim();
+        (key.trim() == "PrimaryInterface" && !value.is_empty()).then(|| value.to_owned())
+    })
 }
 
 #[allow(dead_code)]
@@ -350,8 +390,13 @@ fn get_server_by_order(device: String) -> Result<String> {
 
 fn listnetworkserviceorder() -> Result<Vec<(String, String, String)>> {
     let output = networksetup().arg("-listnetworkserviceorder").output()?;
+    check_output(&output)?;
     let stdout = from_utf8(&output.stdout).or(Err(Error::ParseStr("output".into())))?;
 
+    Ok(parse_network_service_order(stdout))
+}
+
+fn parse_network_service_order(stdout: &str) -> Vec<(String, String, String)> {
     let mut lines = stdout.split('\n');
     lines.next(); // ignore the tips
 
@@ -388,7 +433,39 @@ fn listnetworkserviceorder() -> Result<Vec<(String, String, String)>> {
         }
     }
 
-    Ok(services)
+    services
+}
+
+#[test]
+fn primary_wifi_wins_over_first_bridge_and_tunnel_route() {
+    let interface = primary_interface_from_output(
+        "<dictionary> {\n  PrimaryInterface : en0\n  Router : 192.0.2.1\n}",
+    )
+    .unwrap();
+    let services = parse_network_service_order(
+        "An asterisk denotes a disabled service.\n(1) Thunderbolt Bridge\n(Hardware Port: \
+         Thunderbolt Bridge, Device: bridge0)\n\n(2) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n",
+    );
+    assert_eq!(
+        services
+            .into_iter()
+            .find(|(_, _, device)| device == &interface)
+            .unwrap()
+            .0,
+        "Wi-Fi"
+    );
+    assert!(primary_interface_from_output("No such key").is_none());
+}
+
+#[test]
+fn failed_networksetup_command_is_not_reported_as_success() {
+    use std::os::unix::process::ExitStatusExt;
+    let output = std::process::Output {
+        status: std::process::ExitStatus::from_raw(256),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    };
+    assert!(check_output(&output).is_err());
 }
 
 #[test]
