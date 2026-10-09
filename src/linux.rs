@@ -1,11 +1,13 @@
+use std::env;
+use std::process::Command;
+use std::str::from_utf8;
+use std::sync::LazyLock;
+
 use crate::{Autoproxy, Error, Result, Sysproxy};
-use std::{env, process::Command, str::from_utf8, sync::LazyLock};
 
 const CMD_KEY: &str = "org.gnome.system.proxy";
 
-static IS_APPIMAGE: LazyLock<bool> = LazyLock::new(|| {
-    std::env::var("APPIMAGE").is_ok()
-});
+static IS_APPIMAGE: LazyLock<bool> = LazyLock::new(|| std::env::var("APPIMAGE").is_ok());
 
 impl Sysproxy {
     pub fn get_system_proxy() -> Result<Sysproxy> {
@@ -48,8 +50,10 @@ impl Sysproxy {
     pub fn get_enable() -> Result<bool> {
         match env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().as_str() {
             "KDE" => {
-                let xdg_dir = xdg::BaseDirectories::new()?;
-                let config = xdg_dir.get_config_file("kioslaverc");
+                let xdg_dir = xdg::BaseDirectories::new();
+                let config = xdg_dir
+                    .get_config_file("kioslaverc")
+                    .ok_or(Error::XdgConfigHome)?;
                 let config = config.to_str().ok_or(Error::ParseStr("config".into()))?;
 
                 let mode = kreadconfig()
@@ -80,8 +84,10 @@ impl Sysproxy {
     pub fn get_bypass() -> Result<String> {
         match env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().as_str() {
             "KDE" => {
-                let xdg_dir = xdg::BaseDirectories::new()?;
-                let config = xdg_dir.get_config_file("kioslaverc");
+                let xdg_dir = xdg::BaseDirectories::new();
+                let config = xdg_dir
+                    .get_config_file("kioslaverc")
+                    .ok_or(Error::XdgConfigHome)?;
                 let config = config.to_str().ok_or(Error::ParseStr("config".into()))?;
 
                 let bypass = kreadconfig()
@@ -143,8 +149,10 @@ impl Sysproxy {
     pub fn set_enable(&self) -> Result<()> {
         match env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().as_str() {
             "KDE" => {
-                let xdg_dir = xdg::BaseDirectories::new()?;
-                let config = xdg_dir.get_config_file("kioslaverc");
+                let xdg_dir = xdg::BaseDirectories::new();
+                let config = xdg_dir
+                    .get_config_file("kioslaverc")
+                    .ok_or(Error::XdgConfigHome)?;
                 let config = config.to_str().ok_or(Error::ParseStr("config".into()))?;
                 let mode = if self.enable { "1" } else { "0" };
                 kwriteconfig()
@@ -173,31 +181,33 @@ impl Sysproxy {
     pub fn set_bypass(&self) -> Result<()> {
         match env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().as_str() {
             "KDE" => {
-                let xdg_dir = xdg::BaseDirectories::new()?;
-                let config = xdg_dir.get_config_file("kioslaverc");
+                let xdg_dir = xdg::BaseDirectories::new();
+                let config = xdg_dir
+                    .get_config_file("kioslaverc")
+                    .ok_or(Error::XdgConfigHome)?;
                 let config = config.to_str().ok_or(Error::ParseStr("config".into()))?;
 
                 let bypass = self
-                .bypass
-                .split(',')
-                .map(|h| {
-                    let mut host = String::from(h.trim());
-                    if !host.starts_with('\'') && !host.starts_with('"') {
-                        host = String::from("'") + &host;
-                    }
-                    if !host.ends_with('\'') && !host.ends_with('"') {
-                        host += "'";
-                    }
-                    host
-                })
-                .collect::<Vec<String>>()
-                .join(", ");
+                    .bypass
+                    .split(',')
+                    .map(|h| {
+                        let mut host = String::from(h.trim());
+                        if !host.starts_with('\'') && !host.starts_with('"') {
+                            host = String::from("'") + &host;
+                        }
+                        if !host.ends_with('\'') && !host.ends_with('"') {
+                            host += "'";
+                        }
+                        host
+                    })
+                    .collect::<Vec<String>>()
+                    .join(", ");
 
                 let bypass = format!("[{bypass}]");
 
                 gsettings()
-                .args(["set", CMD_KEY, "ignore-hosts", bypass.as_str()])
-                .status()?;
+                    .args(["set", CMD_KEY, "ignore-hosts", bypass.as_str()])
+                    .status()?;
 
                 kwriteconfig()
                     .args([
@@ -298,8 +308,10 @@ fn set_proxy(proxy: &Sysproxy, service: &str) -> Result<()> {
             gsettings().args(["set", schema, "host", host]).status()?;
             gsettings().args(["set", schema, "port", port]).status()?;
 
-            let xdg_dir = xdg::BaseDirectories::new()?;
-            let config = xdg_dir.get_config_file("kioslaverc");
+            let xdg_dir = xdg::BaseDirectories::new();
+            let config = xdg_dir
+                .get_config_file("kioslaverc")
+                .ok_or(Error::XdgConfigHome)?;
             let config = config.to_str().ok_or(Error::ParseStr("config".into()))?;
 
             let key = format!("{service}Proxy");
@@ -327,7 +339,7 @@ fn set_proxy(proxy: &Sysproxy, service: &str) -> Result<()> {
                     schema,
                 ])
                 .status()?;
-     
+
             Ok(())
         }
         _ => {
@@ -350,8 +362,10 @@ fn set_proxy(proxy: &Sysproxy, service: &str) -> Result<()> {
 fn get_proxy(service: &str) -> Result<Sysproxy> {
     match env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().as_str() {
         "KDE" => {
-            let xdg_dir = xdg::BaseDirectories::new()?;
-            let config = xdg_dir.get_config_file("kioslaverc");
+            let xdg_dir = xdg::BaseDirectories::new();
+            let config = xdg_dir
+                .get_config_file("kioslaverc")
+                .ok_or(Error::XdgConfigHome)?;
             let config = config.to_str().ok_or(Error::ParseStr("config".into()))?;
 
             let key = format!("{service}Proxy");
@@ -417,8 +431,10 @@ impl Autoproxy {
     pub fn get_auto_proxy() -> Result<Autoproxy> {
         let (enable, url) = match env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().as_str() {
             "KDE" => {
-                let xdg_dir = xdg::BaseDirectories::new()?;
-                let config = xdg_dir.get_config_file("kioslaverc");
+                let xdg_dir = xdg::BaseDirectories::new();
+                let config = xdg_dir
+                    .get_config_file("kioslaverc")
+                    .ok_or(Error::XdgConfigHome)?;
                 let config = config.to_str().ok_or(Error::ParseStr("config".into()))?;
 
                 let mode = kreadconfig()
@@ -471,8 +487,10 @@ impl Autoproxy {
     pub fn set_auto_proxy(&self) -> Result<()> {
         match env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().as_str() {
             "KDE" => {
-                let xdg_dir = xdg::BaseDirectories::new()?;
-                let config = xdg_dir.get_config_file("kioslaverc");
+                let xdg_dir = xdg::BaseDirectories::new();
+                let config = xdg_dir
+                    .get_config_file("kioslaverc")
+                    .ok_or(Error::XdgConfigHome)?;
                 let config = config.to_str().ok_or(Error::ParseStr("config".into()))?;
                 let mode = if self.enable { "2" } else { "0" };
                 kwriteconfig()

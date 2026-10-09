@@ -1,6 +1,9 @@
-use crate::{Autoproxy, Error, Result, Sysproxy};
 use std::ffi::c_void;
-use std::{mem::size_of, mem::ManuallyDrop, net::SocketAddr, str::FromStr};
+use std::mem::{size_of, ManuallyDrop};
+use std::net::SocketAddr;
+use std::str::FromStr;
+
+pub use windows::core::Error as Win32Error;
 use windows::core::PWSTR;
 use windows::Win32::Networking::WinInet::{
     InternetSetOptionW, INTERNET_OPTION_PER_CONNECTION_OPTION,
@@ -12,7 +15,7 @@ use windows::Win32::Networking::WinInet::{
 };
 use winreg::{enums, RegKey};
 
-pub use windows::core::Error as Win32Error;
+use crate::{Autoproxy, Error, Result, Sysproxy};
 
 const SUB_KEY: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
 

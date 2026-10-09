@@ -1,12 +1,16 @@
-use crate::{Error, Result};
 use iptools::iprange::{IPv4, IpRange, IpVer};
+
+use crate::{Error, Result};
 
 /// Convert ipv4 cidr to wildcard
 ///
 /// Example:
 /// ```
 /// use sysproxy::utils::ipv4_cidr_to_wildcard;
-/// assert_eq!(ipv4_cidr_to_wildcard("127.0.0.1/8").unwrap(), vec!["127.*".to_string()]);
+/// assert_eq!(
+///     ipv4_cidr_to_wildcard("127.0.0.1/8").unwrap(),
+///     vec!["127.*".to_string()]
+/// );
 /// ```
 pub fn ipv4_cidr_to_wildcard(cidr: &str) -> Result<Vec<String>> {
     let ip = IpRange::<IPv4>::new(cidr, "").or(Err(Error::ParseStr(cidr.into())))?;
@@ -15,7 +19,7 @@ pub fn ipv4_cidr_to_wildcard(cidr: &str) -> Result<Vec<String>> {
         return Err(Error::ParseStr(cidr.into()));
     }
 
-    let (start, end) = ip.get_range().unwrap();
+    let (start, end) = ip.get_range();
     let start = start.split('.').collect::<Vec<&str>>();
     let end = end.split('.').collect::<Vec<&str>>();
 
