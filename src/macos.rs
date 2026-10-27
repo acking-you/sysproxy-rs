@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::str::from_utf8;
 
 use log::debug;
+use nix::ifaddrs::getifaddrs;
 
 use crate::{Autoproxy, Error, Result, Sysproxy};
 
@@ -487,22 +488,21 @@ fn default_network_service() -> Result<String> {
     // guess the first listed service: it may be an unplugged Thunderbolt bridge.
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.connect("1.1.1.1:80")?;
-    let ip = socket.local_addr()?.ip();
-    let addr = SocketAddr::new(ip, 0);
+    let SocketAddr::V4(local) = socket.local_addr()? else {
+        return Err(Error::NetworkInterface);
+    };
 
-    let interfaces = interfaces::Interface::get_all().or(Err(Error::NetworkInterface))?;
-    let interface = interfaces
-        .into_iter()
-        .find(|i| i.addresses.iter().any(|a| a.addr == Some(addr)))
-        .map(|i| i.name.to_owned());
-
-    match interface {
-        Some(interface) => {
-            let service = get_server_by_order(interface)?;
-            Ok(service)
-        }
-        None => Err(Error::NetworkInterface),
-    }
+    let interface = getifaddrs()
+        .map_err(|_| Error::NetworkInterface)?
+        .find(|ifaddr| {
+            ifaddr
+                .address
+                .as_ref()
+                .and_then(|address| address.as_sockaddr_in())
+                .is_some_and(|address| address.ip() == *local.ip())
+        })
+        .ok_or(Error::NetworkInterface)?;
+    get_server_by_order(interface.interface_name)
 }
 
 fn primary_interface() -> Result<String> {
